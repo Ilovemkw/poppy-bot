@@ -44,7 +44,7 @@ const CHAPTERS = {
     ]
   },
   4: {
-    name: "Chapter 4: Safe Haven",
+    name: "Chapter 4: The Cauldron",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -53,7 +53,7 @@ const CHAPTERS = {
     ]
   },
   5: {
-    name: "Chapter 5: Broken Things",
+    name: "Chapter 5: The Returning Evil",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -292,13 +292,14 @@ client.on('interactionCreate', async (interaction) => {
 
     // /queue
     if (commandName === 'queue') {
+      await interaction.deferReply();
       const mode = interaction.options.getString('modo');
       const guildQueues = getOrInitGuild(guildId);
 
       // Already in a queue?
       for (const [m, data] of Object.entries(guildQueues)) {
         if (data && data.players && data.players.includes(user.id)) {
-          return interaction.reply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.`, ephemeral: true });
+          return interaction.editReply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.` });
         }
       }
 
@@ -314,7 +315,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = buildQueueEmbed(mode, data.players, guildId);
       const row = buildQueueButtons(mode);
 
-      await interaction.reply({ embeds: [embed], components: [row] });
+      await interaction.editReply({ embeds: [embed], components: [row] });
       const msg = await interaction.fetchReply();
       data.messageId = msg.id;
 
