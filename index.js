@@ -44,7 +44,7 @@ const CHAPTERS = {
     ]
   },
   4: {
-    name: "Chapter 4: The Cauldron",
+    name: "Chapter 4: Safe Haven",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -53,7 +53,7 @@ const CHAPTERS = {
     ]
   },
   5: {
-    name: "Chapter 5: The Returning Evil",
+    name: "Chapter 5: Broken Things",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -317,7 +317,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.editReply({ embeds: [embed], components: [row] });
       const msg = await interaction.fetchReply();
-      data.messageId = msg.id;
+      data.messageId = msg ? msg.id : null;
 
       // Queue full? → start match
       if (data.players.length >= slots) {
