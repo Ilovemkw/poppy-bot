@@ -111,14 +111,24 @@ function getOrInitLeaderboard(guildId, userId) {
 function parseTime(str) {
   str = str.trim();
   const parts = str.split(':');
-  if (parts.length === 2) return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-  return parseFloat(str);
+  if (parts.length === 3) {
+    // h:mm:ss.ms
+    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  } else if (parts.length === 2) {
+    // m:ss.ms
+    return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+  }
+  // ss.ms
+  return parseFloat(parts[0]);
 }
 
 function formatTime(secs) {
-  const m = Math.floor(secs / 60);
-  const s = (secs % 60).toFixed(2).padStart(5, '0');
-  return m > 0 ? `${m}:${s}` : `${s}s`;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = (secs % 60).toFixed(3).padStart(6, '0');
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${s}`;
+  if (m > 0) return `${m}:${s}`;
+  return `${s}`;
 }
 
 // ─────────────────────────────────────────
