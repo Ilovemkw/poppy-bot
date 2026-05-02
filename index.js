@@ -49,7 +49,7 @@ const CHAPTERS = {
     ]
   },
   4: {
-    name: "Chapter 4: The Cauldron",
+    name: "Chapter 4: Safe Haven",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -58,7 +58,7 @@ const CHAPTERS = {
     ]
   },
   5: {
-    name: "Chapter 5: The Returning Evil",
+    name: "Chapter 5: Broken Things",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -124,21 +124,26 @@ function formatTime(secs) {
 // ─────────────────────────────────────────
 //  EMBEDS
 // ─────────────────────────────────────────
-function buildQueueEmbed(mode, players) {
+function buildQueueEmbed(mode, players, forcedChapter = null, forcedCategory = null) {
   const modeInfo = MODES[mode];
   const slots = modeInfo.slots;
   const filled = players.length;
   const playerList = players.map((p, i) => `${i + 1}. <@${p}>`).join('\n') || '*Nobody in queue...*';
   const bar = '🟢'.repeat(filled) + '⬛'.repeat(slots - filled);
 
+  const fields = [
+    { name: 'Progress', value: `${bar} (${filled}/${slots})`, inline: false },
+    { name: 'Mode', value: modeInfo.label, inline: true },
+    { name: 'Status', value: filled < slots ? '⏳ Waiting for players...' : '✅ Ready to start!', inline: true },
+  ];
+
+  if (forcedChapter) fields.push({ name: '📖 Chapter', value: CHAPTERS[forcedChapter].name, inline: false });
+  if (forcedCategory) fields.push({ name: '🏷️ Category', value: forcedCategory, inline: true });
+
   return new EmbedBuilder()
     .setTitle(`${modeInfo.emoji} Matchmaking Queue — ${modeInfo.label}`)
     .setDescription(`**Poppy Playtime Speedrun**\n\nPlayers in queue:\n${playerList}`)
-    .addFields(
-      { name: 'Progress', value: `${bar} (${filled}/${slots})`, inline: false },
-      { name: 'Mode', value: modeInfo.label, inline: true },
-      { name: 'Status', value: filled < slots ? '⏳ Waiting for players...' : '✅ Ready to start!', inline: true }
-    )
+    .addFields(...fields)
     .setColor(filled < slots ? 0xf5a623 : 0x2ecc71)
     .setFooter({ text: 'Press Join to enter the queue' })
     .setTimestamp();
@@ -372,7 +377,7 @@ client.on('interactionCreate', async (interaction) => {
           try {
             const ch = await client.channels.fetch(data.channelId);
             const msg = await ch.messages.fetch(data.messageId);
-            await msg.edit({ embeds: [buildQueueEmbed(mode, data.players)], components: [buildQueueButtons(mode)] });
+            await msg.edit({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode)] });
           } catch (_) {}
         }
       }
@@ -395,33 +400,38 @@ client.on('interactionCreate', async (interaction) => {
 
     // /queue
     if (commandName === 'queue') {
-      await interaction.deferReply();
       const mode = interaction.options.getString('mode');
       const forcedChapter = interaction.options.getString('chapter');
       const guildQueues = getOrInitGuild(guildId);
 
+      // Check if already in a queue
       for (const [m, data] of Object.entries(guildQueues)) {
         if (data && data.players && data.players.includes(user.id)) {
-          return interaction.editReply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.` });
+          return interaction.reply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.`, ephemeral: true });
         }
       }
 
-      if (!guildQueues[mode]) {
-        guildQueues[mode] = { players: [], messageId: null, channelId: channel.id, forcedChapter: forcedChapter ? parseInt(forcedChapter) : null };
+      // If chapter is forced, ask for category first before opening queue
+      if (forcedChapter) {
+        const chapterNum = parseInt(forcedChapter);
+        const categoryMenu = new StringSelectMenuBuilder()
+          .setCustomId(`queuecat:${mode}:${chapterNum}`)
+          .setPlaceholder('Select a category or pick random')
+          .addOptions([
+            { label: '🎲 Random', value: 'random' },
+            ...CHAPTERS[chapterNum].categories.map(c => ({ label: c, value: c }))
+          ]);
+        const row = new ActionRowBuilder().addComponents(categoryMenu);
+        const embed = new EmbedBuilder()
+          .setTitle(`📖 ${CHAPTERS[chapterNum].name}`)
+          .setDescription(`Select a category for your **${mode}** match:`)
+          .setColor(0xf5a623);
+        return interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       }
 
-      const data = guildQueues[mode];
-      data.players.push(user.id);
-      const slots = MODES[mode].slots;
-
-      await interaction.editReply({ embeds: [buildQueueEmbed(mode, data.players)], components: [buildQueueButtons(mode)] });
-      const msg = await interaction.fetchReply();
-      data.messageId = msg ? msg.id : null;
-
-      if (data.players.length >= slots) {
-        await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter);
-        delete guildQueues[mode];
-      }
+      // No forced chapter — open queue directly
+      await interaction.deferReply();
+      await openQueue(mode, null, null, guildId, channel, user, interaction);
     }
   }
 
@@ -451,6 +461,21 @@ client.on('interactionCreate', async (interaction) => {
       const embed = buildLeaderboardEmbed(guildId, 'specific', chapterNum, category);
       return interaction.update({ embeds: [embed], components: [] });
     }
+
+    // Queue category selector (when chapter is forced)
+    if (customId.startsWith('queuecat:')) {
+      const [, mode, chapterStr] = customId.split(':');
+      const chapterNum = parseInt(chapterStr);
+      const selected = interaction.values[0];
+      const forcedCategory = selected === 'random' ? null : selected;
+
+      // Acknowledge the select menu
+      await interaction.update({ content: `✅ Got it! Opening **${mode}** queue for **${CHAPTERS[chapterNum].name}** — ${forcedCategory || 'Random category'}...`, embeds: [], components: [] });
+
+      // Now open the queue in the channel
+      const targetChannel = interaction.channel;
+      await openQueue(mode, chapterNum, forcedCategory, guildId, targetChannel, user, null);
+    }
   }
 
   // ── BUTTONS ──
@@ -473,9 +498,9 @@ client.on('interactionCreate', async (interaction) => {
         }
         data.players.push(user.id);
         const slots = MODES[mode].slots;
-        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players)], components: [buildQueueButtons(mode)] });
+        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode)] });
         if (data.players.length >= slots) {
-          await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter || null);
+          await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter || null, data.forcedCategory || null);
           delete guildQueues[mode];
         }
       }
@@ -486,7 +511,7 @@ client.on('interactionCreate', async (interaction) => {
         const idx = data.players.indexOf(user.id);
         if (idx === -1) return interaction.reply({ content: '❌ You are not in this queue.', ephemeral: true });
         data.players.splice(idx, 1);
-        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players)], components: [buildQueueButtons(mode)] });
+        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode)] });
       }
     }
 
@@ -576,9 +601,40 @@ function buildQueueButtons(mode) {
   );
 }
 
-async function startMatch(mode, guildId, channel, players, forcedChapter = null) {
+async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, user, interaction) {
+  const guildQueues = getOrInitGuild(guildId);
+
+  if (!guildQueues[mode]) {
+    guildQueues[mode] = { players: [], messageId: null, channelId: channel.id, forcedChapter, forcedCategory };
+  }
+
+  const data = guildQueues[mode];
+  data.players.push(user.id);
+  const slots = MODES[mode].slots;
+
+  const embed = buildQueueEmbed(mode, data.players, forcedChapter, forcedCategory);
+  const row = buildQueueButtons(mode);
+
+  let msg;
+  if (interaction) {
+    // Called from deferReply flow
+    await interaction.editReply({ embeds: [embed], components: [row] });
+    msg = await interaction.fetchReply();
+  } else {
+    // Called from select menu flow
+    msg = await channel.send({ embeds: [embed], components: [row] });
+  }
+  data.messageId = msg ? msg.id : null;
+
+  if (data.players.length >= slots) {
+    await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter, data.forcedCategory);
+    delete guildQueues[mode];
+  }
+}
+
+async function startMatch(mode, guildId, channel, players, forcedChapter = null, forcedCategory = null) {
   const chapter = forcedChapter || randomChapter();
-  const category = randomCategory(chapter);
+  const category = forcedCategory || randomCategory(chapter);
   const matchId = generateMatchId();
 
   // Create private temporary channel
@@ -626,7 +682,8 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null)
   );
 
   const mentions = players.map(p => `<@${p}>`).join(' ');
-  await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}`, embeds: [embed] });
+  // Only a short notification in the general channel — no duplicate embed
+  await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
   await matchChannel.send({
     content: `${mentions}\n\n🏁 **Your match has started!** Submit your time once you finish.`,
     embeds: [embed],
