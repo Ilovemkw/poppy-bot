@@ -75,7 +75,7 @@ const CHAPTERS = {
     ]
   },
   4: {
-    name: "Chapter 4: The Cauldron",
+    name: "Chapter 4: Safe Haven",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -84,7 +84,7 @@ const CHAPTERS = {
     ]
   },
   5: {
-    name: "Chapter 5: The Returning Evil",
+    name: "Chapter 5: Broken Things",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
