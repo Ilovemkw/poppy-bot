@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits,
@@ -14,6 +16,30 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
   ]
 });
+
+// ─────────────────────────────────────────
+//  PERSISTENCIA EN DISCO
+// ─────────────────────────────────────────
+const DATA_FILE = path.join(__dirname, 'data.json');
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Failed to load data.json:', e);
+  }
+  return { leaderboard: {}, bestTimes: {} };
+}
+
+function saveData() {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ leaderboard, bestTimes }, null, 2));
+  } catch (e) {
+    console.error('Failed to save data.json:', e);
+  }
+}
 
 // ─────────────────────────────────────────
 //  DATOS DE POPPY PLAYTIME
@@ -49,7 +75,7 @@ const CHAPTERS = {
     ]
   },
   4: {
-    name: "Chapter 4: Safe Haven",
+    name: "Chapter 4: The Cauldron",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -58,7 +84,7 @@ const CHAPTERS = {
     ]
   },
   5: {
-    name: "Chapter 5: Broken Things",
+    name: "Chapter 5: The Returning Evil",
     categories: [
       "Any% - Unrestricted",
       "Any% - OOB",
@@ -69,11 +95,17 @@ const CHAPTERS = {
 };
 
 // ─────────────────────────────────────────
-//  ESTADO
+//  ESTADO (persistente)
 // ─────────────────────────────────────────
-const matchmaking = {};   // matchmaking[guildId][mode] = { players, messageId, channelId, forcedChapter }
-const activeMatches = {}; // activeMatches[matchId] = { players, chapter, category, times, matchChannelId, guildId, statusMessageId }
-const leaderboard = {};   // leaderboard[guildId][userId] = { wins, byChapter: { "1:Any% - OOB": N } }
+const saved = loadData();
+// leaderboard[guildId][userId] = { wins, byChapter: { "1:Any% - OOB": N } }
+const leaderboard = saved.leaderboard || {};
+// bestTimes[guildId][userId]["1:Any% - OOB"] = bestTimeInSeconds
+const bestTimes = saved.bestTimes || {};
+
+// Estado en memoria (no necesita persistencia)
+const matchmaking = {};
+const activeMatches = {};
 
 const MODES = {
   "1v1":     { slots: 2, label: "1v1",     emoji: "⚔️" },
@@ -108,17 +140,17 @@ function getOrInitLeaderboard(guildId, userId) {
   return leaderboard[guildId][userId];
 }
 
+function getOrInitBestTimes(guildId, userId) {
+  if (!bestTimes[guildId]) bestTimes[guildId] = {};
+  if (!bestTimes[guildId][userId]) bestTimes[guildId][userId] = {};
+  return bestTimes[guildId][userId];
+}
+
 function parseTime(str) {
   str = str.trim();
   const parts = str.split(':');
-  if (parts.length === 3) {
-    // h:mm:ss.ms
-    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
-  } else if (parts.length === 2) {
-    // m:ss.ms
-    return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-  }
-  // ss.ms
+  if (parts.length === 3) return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  if (parts.length === 2) return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
   return parseFloat(parts[0]);
 }
 
@@ -169,7 +201,7 @@ function buildMatchEmbed(players, chapter, category, matchId) {
       { name: '🏷️ Category', value: category, inline: true },
       { name: '👥 Players', value: `${players.length}`, inline: true },
       { name: '🆔 Match ID', value: `\`${matchId}\``, inline: false },
-      { name: '⏱️ How to submit', value: 'Press **Submit Time** once you finish!', inline: false },
+      { name: '⏱️ How to submit', value: 'Press **Submit Time** once you finish, or **Forfeit** to give up.', inline: false },
     )
     .setColor(0xe74c3c)
     .setFooter({ text: 'Good luck to everyone! 🍀' })
@@ -192,25 +224,42 @@ function buildLeaderboardEmbed(guildId, type, chapterNum, category) {
   if (type === 'total') {
     sorted = entries.sort((a, b) => b[1].wins - a[1].wins);
     title = '🏆 Overall Leaderboard — Total Wins';
-  } else {
-    const key = `${chapterNum}:${category}`;
-    sorted = entries
-      .filter(([, d]) => d.byChapter[key] > 0)
-      .sort((a, b) => (b[1].byChapter[key] || 0) - (a[1].byChapter[key] || 0));
-    title = `🏆 Leaderboard — Ch.${chapterNum} ${category}`;
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = sorted.slice(0, 10).map(([userId, data], i) =>
+      `${medals[i] || `${i + 1}.`} <@${userId}> — **${data.wins}** win${data.wins !== 1 ? 's' : ''}`
+    );
+    return new EmbedBuilder().setTitle(title).setDescription(lines.join('\n')).setColor(0xf1c40f).setTimestamp();
   }
 
-  const medals = ['🥇', '🥈', '🥉'];
-  const lines = sorted.slice(0, 10).map(([userId, data], i) => {
-    const wins = type === 'total' ? data.wins : (data.byChapter[`${chapterNum}:${category}`] || 0);
-    return `${medals[i] || `${i + 1}.`} <@${userId}> — **${wins}** win${wins !== 1 ? 's' : ''}`;
-  });
+  if (type === 'wins') {
+    const key = `${chapterNum}:${category}`;
+    sorted = entries
+      .filter(([, d]) => d.byChapter && d.byChapter[key] > 0)
+      .sort((a, b) => (b[1].byChapter[key] || 0) - (a[1].byChapter[key] || 0));
+    title = `🏆 Wins — Ch.${chapterNum} ${category}`;
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = sorted.slice(0, 10).map(([userId, data], i) => {
+      const wins = data.byChapter[key] || 0;
+      return `${medals[i] || `${i + 1}.`} <@${userId}> — **${wins}** win${wins !== 1 ? 's' : ''}`;
+    });
+    return new EmbedBuilder().setTitle(title).setDescription(lines.join('\n') || '*No results yet.*').setColor(0xf1c40f).setTimestamp();
+  }
 
-  return new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(lines.join('\n') || '*No results for this category yet.*')
-    .setColor(0xf1c40f)
-    .setTimestamp();
+  if (type === 'times') {
+    const key = `${chapterNum}:${category}`;
+    const guildBT = bestTimes[guildId] || {};
+    const timeEntries = Object.entries(guildBT)
+      .map(([userId, times]) => [userId, times[key]])
+      .filter(([, t]) => t !== undefined)
+      .sort((a, b) => a[1] - b[1]);
+
+    title = `⏱️ Best Times — Ch.${chapterNum} ${category}`;
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = timeEntries.slice(0, 10).map(([userId, t], i) =>
+      `${medals[i] || `${i + 1}.`} <@${userId}> — **${formatTime(t)}**`
+    );
+    return new EmbedBuilder().setTitle(title).setDescription(lines.join('\n') || '*No times recorded yet.*').setColor(0x3498db).setTimestamp();
+  }
 }
 
 // ─────────────────────────────────────────
@@ -259,12 +308,13 @@ const commands = [
     .addStringOption(opt =>
       opt.setName('type').setDescription('Leaderboard type').setRequired(true)
         .addChoices(
-          { name: '🏆 Overall (total wins)', value: 'total' },
-          { name: '📖 By Chapter & Category', value: 'specific' },
+          { name: '🏆 Overall wins', value: 'total' },
+          { name: '🥊 Wins by chapter/category', value: 'wins' },
+          { name: '⏱️ Best times by chapter/category', value: 'times' },
         )
     )
     .addStringOption(opt =>
-      opt.setName('chapter').setDescription('Chapter (required if type is specific)').setRequired(false)
+      opt.setName('chapter').setDescription('Chapter (required for wins/times)').setRequired(false)
         .addChoices(...chapterChoices)
     ),
 
@@ -313,28 +363,26 @@ client.on('interactionCreate', async (interaction) => {
             { label: '🎲 Random', value: 'random' },
             ...CHAPTERS[chapter].categories.map(c => ({ label: c, value: c }))
           ]);
-
         const row = new ActionRowBuilder().addComponents(categoryMenu);
         const embed = new EmbedBuilder()
           .setTitle(`📖 ${CHAPTERS[chapter].name}`)
           .setDescription('Select a category or pick a random one:')
           .setColor(0x9b59b6);
-
         return interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       }
 
       const category = randomCategory(chapter);
-      const embed = new EmbedBuilder()
-        .setTitle('🎲 Poppy Playtime Random Roll')
-        .addFields(
-          { name: '📖 Chapter', value: CHAPTERS[chapter].name, inline: false },
-          { name: '🏷️ Category', value: category, inline: true },
-        )
-        .setColor(0x9b59b6)
-        .setFooter({ text: `Requested by ${user.username}` })
-        .setTimestamp();
-
-      return interaction.reply({ embeds: [embed] });
+      return interaction.reply({
+        embeds: [new EmbedBuilder()
+          .setTitle('🎲 Poppy Playtime Random Roll')
+          .addFields(
+            { name: '📖 Chapter', value: CHAPTERS[chapter].name, inline: false },
+            { name: '🏷️ Category', value: category, inline: true },
+          )
+          .setColor(0x9b59b6)
+          .setFooter({ text: `Requested by ${user.username}` })
+          .setTimestamp()]
+      });
     }
 
     // /leaderboard
@@ -342,13 +390,13 @@ client.on('interactionCreate', async (interaction) => {
       const type = interaction.options.getString('type');
       const chapterOpt = interaction.options.getString('chapter');
 
-      if (type === 'specific') {
+      if (type === 'wins' || type === 'times') {
         if (!chapterOpt) {
-          return interaction.reply({ content: '❌ Please select a chapter when using "By Chapter & Category".', ephemeral: true });
+          return interaction.reply({ content: '❌ Please select a chapter for this leaderboard type.', ephemeral: true });
         }
         const chapterNum = parseInt(chapterOpt);
         const categoryMenu = new StringSelectMenuBuilder()
-          .setCustomId(`lbcat:${chapterNum}`)
+          .setCustomId(`lbcat:${type}:${chapterNum}`)
           .setPlaceholder('Select a category')
           .addOptions(CHAPTERS[chapterNum].categories.map(c => ({ label: c, value: c })));
         const row = new ActionRowBuilder().addComponents(categoryMenu);
@@ -367,11 +415,13 @@ client.on('interactionCreate', async (interaction) => {
           lines.push(`${MODES[mode].emoji} **${mode}**: ${data.players.length}/${MODES[mode].slots} players`);
         }
       }
-      const embed = new EmbedBuilder()
-        .setTitle('📋 Queue Status')
-        .setDescription(lines.length > 0 ? lines.join('\n') : '*No active queues.*')
-        .setColor(0x3498db).setTimestamp();
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({
+        embeds: [new EmbedBuilder()
+          .setTitle('📋 Queue Status')
+          .setDescription(lines.length > 0 ? lines.join('\n') : '*No active queues.*')
+          .setColor(0x3498db).setTimestamp()],
+        ephemeral: true
+      });
     }
 
     // /leavequeue
@@ -414,14 +464,12 @@ client.on('interactionCreate', async (interaction) => {
       const forcedChapter = interaction.options.getString('chapter');
       const guildQueues = getOrInitGuild(guildId);
 
-      // Check if already in a queue
       for (const [m, data] of Object.entries(guildQueues)) {
         if (data && data.players && data.players.includes(user.id)) {
           return interaction.reply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.`, ephemeral: true });
         }
       }
 
-      // If chapter is forced, ask for category first before opening queue
       if (forcedChapter) {
         const chapterNum = parseInt(forcedChapter);
         const categoryMenu = new StringSelectMenuBuilder()
@@ -439,7 +487,6 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       }
 
-      // No forced chapter — open queue directly
       await interaction.deferReply();
       await openQueue(mode, null, null, guildId, channel, user, interaction);
     }
@@ -447,44 +494,47 @@ client.on('interactionCreate', async (interaction) => {
 
   // ── SELECT MENUS ──
   if (interaction.isStringSelectMenu()) {
-    const { customId, guildId, user } = interaction;
+    const { customId, guildId, user, channel } = interaction;
 
     if (customId.startsWith('rollcat:')) {
       const chapter = parseInt(customId.split(':')[1]);
       const selected = interaction.values[0];
       const category = selected === 'random' ? randomCategory(chapter) : selected;
-      const embed = new EmbedBuilder()
-        .setTitle('🎲 Poppy Playtime Roll')
-        .addFields(
-          { name: '📖 Chapter', value: CHAPTERS[chapter].name, inline: false },
-          { name: '🏷️ Category', value: category, inline: true },
-        )
-        .setColor(0x9b59b6)
-        .setFooter({ text: `Requested by ${user.username}` })
-        .setTimestamp();
-      return interaction.update({ embeds: [embed], components: [] });
+      return interaction.update({
+        embeds: [new EmbedBuilder()
+          .setTitle('🎲 Poppy Playtime Roll')
+          .addFields(
+            { name: '📖 Chapter', value: CHAPTERS[chapter].name, inline: false },
+            { name: '🏷️ Category', value: category, inline: true },
+          )
+          .setColor(0x9b59b6)
+          .setFooter({ text: `Requested by ${user.username}` })
+          .setTimestamp()],
+        components: []
+      });
     }
 
     if (customId.startsWith('lbcat:')) {
-      const chapterNum = parseInt(customId.split(':')[1]);
+      const parts = customId.split(':');
+      const type = parts[1];
+      const chapterNum = parseInt(parts[2]);
       const category = interaction.values[0];
-      const embed = buildLeaderboardEmbed(guildId, 'specific', chapterNum, category);
+      const embed = buildLeaderboardEmbed(guildId, type, chapterNum, category);
       return interaction.update({ embeds: [embed], components: [] });
     }
 
-    // Queue category selector (when chapter is forced)
     if (customId.startsWith('queuecat:')) {
       const [, mode, chapterStr] = customId.split(':');
       const chapterNum = parseInt(chapterStr);
       const selected = interaction.values[0];
       const forcedCategory = selected === 'random' ? null : selected;
 
-      // Acknowledge the select menu
-      await interaction.update({ content: `✅ Got it! Opening **${mode}** queue for **${CHAPTERS[chapterNum].name}** — ${forcedCategory || 'Random category'}...`, embeds: [], components: [] });
+      await interaction.update({
+        content: `✅ Opening **${mode}** queue for **${CHAPTERS[chapterNum].name}** — ${forcedCategory || 'Random category'}...`,
+        embeds: [], components: []
+      });
 
-      // Now open the queue in the channel
-      const targetChannel = interaction.channel;
-      await openQueue(mode, chapterNum, forcedCategory, guildId, targetChannel, user, null);
+      await openQueue(mode, chapterNum, forcedCategory, guildId, channel, user, null);
     }
   }
 
@@ -495,6 +545,7 @@ client.on('interactionCreate', async (interaction) => {
     const { guildId, user, channel } = interaction;
     const guildQueues = getOrInitGuild(guildId);
 
+    // Queue join/leave
     if (action === 'join' || action === 'leave') {
       const mode = parts[1];
 
@@ -525,6 +576,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // Submit time
     if (action === 'submittime') {
       const matchId = parts[1];
       const match = activeMatches[matchId];
@@ -538,13 +590,39 @@ client.on('interactionCreate', async (interaction) => {
 
       const timeInput = new TextInputBuilder()
         .setCustomId('time')
-        .setLabel('Your time (e.g. 1:23.45 or 83.45)')
+        .setLabel('Your time (e.g. 1:23.456 or 1:03:23.456)')
         .setStyle(TextInputStyle.Short)
-        .setPlaceholder('1:23.45')
+        .setPlaceholder('1:23.456')
         .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(timeInput));
       await interaction.showModal(modal);
+    }
+
+    // Forfeit
+    if (action === 'forfeit') {
+      const matchId = parts[1];
+      const match = activeMatches[matchId];
+      if (!match) return interaction.reply({ content: '❌ Match not found or already finished.', ephemeral: true });
+      if (!match.players.includes(user.id)) return interaction.reply({ content: '❌ You are not part of this match.', ephemeral: true });
+      if (match.forfeited && match.forfeited.includes(user.id)) return interaction.reply({ content: '❌ You already forfeited.', ephemeral: true });
+
+      if (!match.forfeited) match.forfeited = [];
+      match.forfeited.push(user.id);
+
+      // Mark as forfeit time (Infinity so they always lose)
+      match.times[user.id] = Infinity;
+
+      await interaction.reply({ content: `🏳️ <@${user.id}> has forfeited the match!`, ephemeral: false });
+
+      // Update status embed
+      try {
+        const matchChannel = await client.channels.fetch(match.matchChannelId);
+        await updateStatusEmbed(match, matchChannel);
+      } catch (_) {}
+
+      const allDone = match.players.every(p => match.times[p] !== undefined);
+      if (allDone) await resolveMatch(matchId);
     }
   }
 
@@ -561,42 +639,28 @@ client.on('interactionCreate', async (interaction) => {
       const secs = parseTime(rawTime);
 
       if (isNaN(secs) || secs <= 0) {
-        return interaction.reply({ content: '❌ Invalid time format. Use `1:23.45` or `83.45`.', ephemeral: true });
+        return interaction.reply({ content: '❌ Invalid time format. Use `1:23.456` or `1:03:23.456`.', ephemeral: true });
       }
 
       match.times[user.id] = secs;
+
+      // Update personal best time
+      const bt = getOrInitBestTimes(guildId, user.id);
+      const key = `${match.chapter}:${match.category}`;
+      if (bt[key] === undefined || secs < bt[key]) {
+        bt[key] = secs;
+      }
+      saveData();
+
       await interaction.reply({ content: `✅ Time **${formatTime(secs)}** submitted!`, ephemeral: true });
 
-      // Update status in match channel
       try {
         const matchChannel = await client.channels.fetch(match.matchChannelId);
-        const submittedLines = match.players.map(p => {
-          const t = match.times[p];
-          return t !== undefined ? `<@${p}>: **${formatTime(t)}**` : `<@${p}>: ⏳ *waiting...*`;
-        });
-
-        const statusEmbed = new EmbedBuilder()
-          .setTitle('⏱️ Time Submissions')
-          .setDescription(submittedLines.join('\n'))
-          .setColor(0x3498db)
-          .setTimestamp();
-
-        if (match.statusMessageId) {
-          try {
-            const oldMsg = await matchChannel.messages.fetch(match.statusMessageId);
-            await oldMsg.edit({ embeds: [statusEmbed] });
-          } catch (_) {
-            const newMsg = await matchChannel.send({ embeds: [statusEmbed] });
-            match.statusMessageId = newMsg.id;
-          }
-        } else {
-          const newMsg = await matchChannel.send({ embeds: [statusEmbed] });
-          match.statusMessageId = newMsg.id;
-        }
+        await updateStatusEmbed(match, matchChannel);
       } catch (_) {}
 
-      const allSubmitted = match.players.every(p => match.times[p] !== undefined);
-      if (allSubmitted) await resolveMatch(matchId);
+      const allDone = match.players.every(p => match.times[p] !== undefined);
+      if (allDone) await resolveMatch(matchId);
     }
   }
 });
@@ -611,27 +675,68 @@ function buildQueueButtons(mode) {
   );
 }
 
+function buildMatchButtons(matchId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`submittime:${matchId}`).setLabel('Submit Time').setStyle(ButtonStyle.Primary).setEmoji('⏱️'),
+    new ButtonBuilder().setCustomId(`forfeit:${matchId}`).setLabel('Forfeit').setStyle(ButtonStyle.Danger).setEmoji('🏳️'),
+  );
+}
+
+async function updateStatusEmbed(match, matchChannel) {
+  const submittedLines = match.players.map(p => {
+    if (match.forfeited && match.forfeited.includes(p)) return `<@${p}>: 🏳️ *Forfeited*`;
+    const t = match.times[p];
+    return t !== undefined ? `<@${p}>: **${formatTime(t)}**` : `<@${p}>: ⏳ *waiting...*`;
+  });
+
+  const statusEmbed = new EmbedBuilder()
+    .setTitle('⏱️ Time Submissions')
+    .setDescription(submittedLines.join('\n'))
+    .setColor(0x3498db)
+    .setTimestamp();
+
+  if (match.statusMessageId) {
+    try {
+      const oldMsg = await matchChannel.messages.fetch(match.statusMessageId);
+      await oldMsg.edit({ embeds: [statusEmbed] });
+      return;
+    } catch (_) {}
+  }
+  const newMsg = await matchChannel.send({ embeds: [statusEmbed] });
+  match.statusMessageId = newMsg.id;
+}
+
 async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, user, interaction) {
   const guildQueues = getOrInitGuild(guildId);
 
   if (!guildQueues[mode]) {
-    guildQueues[mode] = { players: [], messageId: null, channelId: channel.id, forcedChapter, forcedCategory };
+    guildQueues[mode] = {
+      players: [],
+      messageId: null,
+      channelId: channel.id,
+      forcedChapter: forcedChapter ?? null,
+      forcedCategory: forcedCategory ?? null,
+    };
   }
 
   const data = guildQueues[mode];
+
+  // Always lock in the forced values from the queue creator
+  // so latecomers can't overwrite them
+  const effectiveChapter = data.forcedChapter;
+  const effectiveCategory = data.forcedCategory;
+
   data.players.push(user.id);
   const slots = MODES[mode].slots;
 
-  const embed = buildQueueEmbed(mode, data.players, forcedChapter, forcedCategory);
+  const embed = buildQueueEmbed(mode, data.players, effectiveChapter, effectiveCategory);
   const row = buildQueueButtons(mode);
 
   let msg;
   if (interaction) {
-    // Called from deferReply flow
     await interaction.editReply({ embeds: [embed], components: [row] });
     msg = await interaction.fetchReply();
   } else {
-    // Called from select menu flow
     msg = await channel.send({ embeds: [embed], components: [row] });
   }
   data.messageId = msg ? msg.id : null;
@@ -643,11 +748,11 @@ async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, 
 }
 
 async function startMatch(mode, guildId, channel, players, forcedChapter = null, forcedCategory = null) {
-  const chapter = forcedChapter || randomChapter();
-  const category = forcedCategory || randomCategory(chapter);
+  // Always respect forced values — never fall back to random if they were set
+  const chapter = (forcedChapter !== null && forcedChapter !== undefined) ? forcedChapter : randomChapter();
+  const category = (forcedCategory !== null && forcedCategory !== undefined) ? forcedCategory : randomCategory(chapter);
   const matchId = generateMatchId();
 
-  // Create private temporary channel
   let matchChannel;
   try {
     matchChannel = await channel.guild.channels.create({
@@ -675,6 +780,7 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
     chapter,
     category,
     times: {},
+    forfeited: [],
     startedAt: new Date(),
     guildId,
     channelId: channel.id,
@@ -683,21 +789,14 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
   };
 
   const embed = buildMatchEmbed(players, chapter, category, matchId);
-  const submitBtn = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`submittime:${matchId}`)
-      .setLabel('Submit Time')
-      .setStyle(ButtonStyle.Primary)
-      .setEmoji('⏱️')
-  );
-
+  const buttons = buildMatchButtons(matchId);
   const mentions = players.map(p => `<@${p}>`).join(' ');
-  // Only a short notification in the general channel — no duplicate embed
+
   await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
   await matchChannel.send({
     content: `${mentions}\n\n🏁 **Your match has started!** Submit your time once you finish.`,
     embeds: [embed],
-    components: [submitBtn],
+    components: [buttons],
   });
 }
 
@@ -705,6 +804,7 @@ async function resolveMatch(matchId) {
   const match = activeMatches[matchId];
   if (!match) return;
 
+  // Find winner — lowest non-Infinity time
   let winnerId = null;
   let lowestTime = Infinity;
   for (const [playerId, time] of Object.entries(match.times)) {
@@ -714,18 +814,23 @@ async function resolveMatch(matchId) {
     }
   }
 
+  // Update leaderboard
   if (winnerId) {
     const lb = getOrInitLeaderboard(match.guildId, winnerId);
     lb.wins += 1;
     const key = `${match.chapter}:${match.category}`;
     lb.byChapter[key] = (lb.byChapter[key] || 0) + 1;
+    saveData();
   }
 
+  // Build results
   const sorted = Object.entries(match.times).sort((a, b) => a[1] - b[1]);
   const medals = ['🥇', '🥈', '🥉', '4️⃣'];
-  const resultLines = sorted.map(([pid, t], i) =>
-    `${medals[i] || `${i + 1}.`} <@${pid}> — **${formatTime(t)}**${pid === winnerId ? ' 🏆 Winner!' : ''}`
-  );
+  const resultLines = sorted.map(([pid, t], i) => {
+    const forfeited = match.forfeited && match.forfeited.includes(pid);
+    const timeStr = forfeited ? '🏳️ Forfeit' : `**${formatTime(t)}**`;
+    return `${medals[i] || `${i + 1}.`} <@${pid}> — ${timeStr}${pid === winnerId ? ' 🏆 Winner!' : ''}`;
+  });
 
   const resultEmbed = new EmbedBuilder()
     .setTitle('🏁 Match Results')
