@@ -609,13 +609,16 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!match.forfeited) match.forfeited = [];
       match.forfeited.push(user.id);
-
-      // Mark as forfeit time (Infinity so they always lose)
       match.times[user.id] = Infinity;
 
       await interaction.reply({ content: `🏳️ <@${user.id}> has forfeited the match!`, ephemeral: false });
 
-      // Update status embed
+      // If only one player hasn't forfeited, they win automatically
+      const activePlayers = match.players.filter(p => !match.forfeited.includes(p));
+      if (activePlayers.length === 1) {
+        match.times[activePlayers[0]] = 0;
+      }
+
       try {
         const matchChannel = await client.channels.fetch(match.matchChannelId);
         await updateStatusEmbed(match, matchChannel);
@@ -686,6 +689,7 @@ async function updateStatusEmbed(match, matchChannel) {
   const submittedLines = match.players.map(p => {
     if (match.forfeited && match.forfeited.includes(p)) return `<@${p}>: 🏳️ *Forfeited*`;
     const t = match.times[p];
+    if (t === 0) return `<@${p}>: 🏆 *Last player standing*`;
     return t !== undefined ? `<@${p}>: **${formatTime(t)}**` : `<@${p}>: ⏳ *waiting...*`;
   });
 
@@ -804,7 +808,7 @@ async function resolveMatch(matchId) {
   const match = activeMatches[matchId];
   if (!match) return;
 
-  // Find winner — lowest non-Infinity time
+  // Find winner — lowest time (forfeited = Infinity, last standing = 0)
   let winnerId = null;
   let lowestTime = Infinity;
   for (const [playerId, time] of Object.entries(match.times)) {
@@ -813,6 +817,8 @@ async function resolveMatch(matchId) {
       winnerId = playerId;
     }
   }
+
+  const lastStanding = lowestTime === 0; // won by all others forfeiting
 
   // Update leaderboard
   if (winnerId) {
@@ -823,12 +829,15 @@ async function resolveMatch(matchId) {
     saveData();
   }
 
-  // Build results
+  // Build results — sort: winner first (time=0 or lowest), forfeits last
   const sorted = Object.entries(match.times).sort((a, b) => a[1] - b[1]);
   const medals = ['🥇', '🥈', '🥉', '4️⃣'];
   const resultLines = sorted.map(([pid, t], i) => {
     const forfeited = match.forfeited && match.forfeited.includes(pid);
-    const timeStr = forfeited ? '🏳️ Forfeit' : `**${formatTime(t)}**`;
+    let timeStr;
+    if (forfeited) timeStr = '🏳️ Forfeit';
+    else if (t === 0) timeStr = '🏆 Last player standing';
+    else timeStr = `**${formatTime(t)}**`;
     return `${medals[i] || `${i + 1}.`} <@${pid}> — ${timeStr}${pid === winnerId ? ' 🏆 Winner!' : ''}`;
   });
 
@@ -842,6 +851,7 @@ async function resolveMatch(matchId) {
     .setColor(0x2ecc71)
     .setTimestamp();
 
+  // Post results in match channel then delete it
   try {
     const matchChannel = await client.channels.fetch(match.matchChannelId);
     await matchChannel.send({ embeds: [resultEmbed] });
@@ -849,6 +859,27 @@ async function resolveMatch(matchId) {
     setTimeout(async () => {
       try { await matchChannel.delete(); } catch (_) {}
     }, 30000);
+  } catch (_) {}
+
+  // Announce results in the original queue channel
+  try {
+    const mainChannel = await client.channels.fetch(match.channelId);
+    const winnerLine = lastStanding
+      ? `🏆 <@${winnerId}> wins by last player standing!`
+      : `🏆 <@${winnerId}> wins with a time of **${formatTime(lowestTime)}**!`;
+
+    const announcementEmbed = new EmbedBuilder()
+      .setTitle('🏁 Match finished!')
+      .setDescription(winnerLine)
+      .addFields(
+        { name: '📖 Chapter', value: CHAPTERS[match.chapter].name, inline: true },
+        { name: '🏷️ Category', value: match.category, inline: true },
+      )
+      .setDescription(`${winnerLine}\n\n${resultLines.join('\n')}`)
+      .setColor(0x2ecc71)
+      .setTimestamp();
+
+    await mainChannel.send({ embeds: [announcementEmbed] });
   } catch (_) {}
 
   delete activeMatches[matchId];
