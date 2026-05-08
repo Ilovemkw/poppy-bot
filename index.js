@@ -134,6 +134,10 @@ function getOrInitGuild(guildId) {
   return matchmaking[guildId];
 }
 
+function generateQueueId() {
+  return Math.random().toString(36).slice(2, 6).toUpperCase();
+}
+
 function getOrInitLeaderboard(guildId, userId) {
   if (!leaderboard[guildId]) leaderboard[guildId] = {};
   if (!leaderboard[guildId][userId]) leaderboard[guildId][userId] = { wins: 0, byChapter: {} };
@@ -410,9 +414,12 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'queuestatus') {
       const guildQueues = matchmaking[guildId] || {};
       const lines = [];
-      for (const [mode, data] of Object.entries(guildQueues)) {
-        if (data && data.players) {
-          lines.push(`${MODES[mode].emoji} **${mode}**: ${data.players.length}/${MODES[mode].slots} players`);
+      for (const [mode, queues] of Object.entries(guildQueues)) {
+        if (!Array.isArray(queues)) continue;
+        for (const data of queues) {
+          const chapterLabel = data.forcedChapter ? ` — ${CHAPTERS[data.forcedChapter].name}` : '';
+          const categoryLabel = data.forcedCategory ? ` (${data.forcedCategory})` : '';
+          lines.push(`${MODES[mode].emoji} **${mode}**${chapterLabel}${categoryLabel}: ${data.players.length}/${MODES[mode].slots} players [ID: ${data.queueId}]`);
         }
       }
       return interaction.reply({
@@ -428,18 +435,22 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'leavequeue') {
       const guildQueues = getOrInitGuild(guildId);
       let found = false;
-      for (const [mode, data] of Object.entries(guildQueues)) {
-        if (!data || !data.players) continue;
-        const idx = data.players.indexOf(user.id);
-        if (idx !== -1) {
-          data.players.splice(idx, 1);
-          found = true;
-          try {
-            const ch = await client.channels.fetch(data.channelId);
-            const msg = await ch.messages.fetch(data.messageId);
-            await msg.edit({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode)] });
-          } catch (_) {}
+      for (const [mode, queues] of Object.entries(guildQueues)) {
+        if (!Array.isArray(queues)) continue;
+        for (const data of queues) {
+          const idx = data.players.indexOf(user.id);
+          if (idx !== -1) {
+            data.players.splice(idx, 1);
+            found = true;
+            try {
+              const ch = await client.channels.fetch(data.channelId);
+              const msg = await ch.messages.fetch(data.messageId);
+              await msg.edit({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode, data.queueId)] });
+            } catch (_) {}
+            break;
+          }
         }
+        if (found) break;
       }
       return interaction.reply({ content: found ? '✅ You have left the queue.' : '❌ You were not in any queue.', ephemeral: true });
     }
@@ -448,14 +459,18 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'cancelqueue') {
       const mode = interaction.options.getString('mode');
       const guildQueues = getOrInitGuild(guildId);
-      if (!guildQueues[mode]) return interaction.reply({ content: '❌ No active queue for that mode.', ephemeral: true });
-      try {
-        const ch = await client.channels.fetch(guildQueues[mode].channelId);
-        const msg = await ch.messages.fetch(guildQueues[mode].messageId);
-        await msg.delete();
-      } catch (_) {}
+      if (!guildQueues[mode] || guildQueues[mode].length === 0) return interaction.reply({ content: '❌ No active queue for that mode.', ephemeral: true });
+      let cancelled = 0;
+      for (const data of guildQueues[mode]) {
+        try {
+          const ch = await client.channels.fetch(data.channelId);
+          const msg = await ch.messages.fetch(data.messageId);
+          await msg.delete();
+        } catch (_) {}
+        cancelled++;
+      }
       delete guildQueues[mode];
-      return interaction.reply({ content: `✅ **${mode}** queue cancelled.`, ephemeral: true });
+      return interaction.reply({ content: `✅ **${cancelled}** **${mode}** queue${cancelled !== 1 ? 's' : ''} cancelled.`, ephemeral: true });
     }
 
     // /queue
@@ -464,9 +479,12 @@ client.on('interactionCreate', async (interaction) => {
       const forcedChapter = interaction.options.getString('chapter');
       const guildQueues = getOrInitGuild(guildId);
 
-      for (const [m, data] of Object.entries(guildQueues)) {
-        if (data && data.players && data.players.includes(user.id)) {
-          return interaction.reply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.`, ephemeral: true });
+      for (const [m, queues] of Object.entries(guildQueues)) {
+        if (!Array.isArray(queues)) continue;
+        for (const q of queues) {
+          if (q.players.includes(user.id)) {
+            return interaction.reply({ content: `❌ You are already in the **${m}** queue. Use \`/leavequeue\` to leave.`, ephemeral: true });
+          }
         }
       }
 
@@ -548,31 +566,38 @@ client.on('interactionCreate', async (interaction) => {
     // Queue join/leave
     if (action === 'join' || action === 'leave') {
       const mode = parts[1];
+      const queueId = parts[2];
+
+      const queuesForMode = guildQueues[mode];
+      const data = Array.isArray(queuesForMode) ? queuesForMode.find(q => q.queueId === queueId) : null;
 
       if (action === 'join') {
-        if (!guildQueues[mode]) return interaction.reply({ content: '❌ This queue no longer exists.', ephemeral: true });
-        const data = guildQueues[mode];
-        for (const [m, d] of Object.entries(guildQueues)) {
-          if (d && d.players && d.players.includes(user.id)) {
-            return interaction.reply({ content: `❌ You are already in the **${m}** queue.`, ephemeral: true });
+        if (!data) return interaction.reply({ content: '❌ This queue no longer exists.', ephemeral: true });
+        // Check if user is already in any queue of any mode
+        for (const [m, queues] of Object.entries(guildQueues)) {
+          if (!Array.isArray(queues)) continue;
+          for (const q of queues) {
+            if (q.players.includes(user.id)) {
+              return interaction.reply({ content: `❌ You are already in the **${m}** queue.`, ephemeral: true });
+            }
           }
         }
         data.players.push(user.id);
         const slots = MODES[mode].slots;
-        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode)] });
+        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode, queueId)] });
         if (data.players.length >= slots) {
           await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter || null, data.forcedCategory || null);
-          delete guildQueues[mode];
+          guildQueues[mode] = queuesForMode.filter(q => q.queueId !== queueId);
+          if (guildQueues[mode].length === 0) delete guildQueues[mode];
         }
       }
 
       if (action === 'leave') {
-        if (!guildQueues[mode]) return interaction.reply({ content: '❌ This queue no longer exists.', ephemeral: true });
-        const data = guildQueues[mode];
+        if (!data) return interaction.reply({ content: '❌ This queue no longer exists.', ephemeral: true });
         const idx = data.players.indexOf(user.id);
         if (idx === -1) return interaction.reply({ content: '❌ You are not in this queue.', ephemeral: true });
         data.players.splice(idx, 1);
-        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode)] });
+        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode, queueId)] });
       }
     }
 
@@ -671,10 +696,10 @@ client.on('interactionCreate', async (interaction) => {
 // ─────────────────────────────────────────
 //  FUNCIONES AUXILIARES
 // ─────────────────────────────────────────
-function buildQueueButtons(mode) {
+function buildQueueButtons(mode, queueId) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`join:${mode}`).setLabel('Join').setStyle(ButtonStyle.Success).setEmoji('✅'),
-    new ButtonBuilder().setCustomId(`leave:${mode}`).setLabel('Leave').setStyle(ButtonStyle.Danger).setEmoji('❌'),
+    new ButtonBuilder().setCustomId(`join:${mode}:${queueId}`).setLabel('Join').setStyle(ButtonStyle.Success).setEmoji('✅'),
+    new ButtonBuilder().setCustomId(`leave:${mode}:${queueId}`).setLabel('Leave').setStyle(ButtonStyle.Danger).setEmoji('❌'),
   );
 }
 
@@ -713,28 +738,34 @@ async function updateStatusEmbed(match, matchChannel) {
 async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, user, interaction) {
   const guildQueues = getOrInitGuild(guildId);
 
-  if (!guildQueues[mode]) {
-    guildQueues[mode] = {
-      players: [],
-      messageId: null,
-      channelId: channel.id,
-      forcedChapter: forcedChapter ?? null,
-      forcedCategory: forcedCategory ?? null,
-    };
+  // Initialize array for this mode if needed
+  if (!guildQueues[mode]) guildQueues[mode] = [];
+
+  const queuesForMode = guildQueues[mode];
+
+  // Enforce limit of 99 queues per mode
+  if (queuesForMode.length >= 99) {
+    const errMsg = `❌ There are already **99** open **${mode}** queues. Please wait for one to finish.`;
+    if (interaction) await interaction.editReply({ content: errMsg });
+    else await channel.send(errMsg);
+    return;
   }
 
-  const data = guildQueues[mode];
+  // Create a new independent queue
+  const queueId = generateQueueId();
+  const newQueue = {
+    queueId,
+    players: [user.id],
+    messageId: null,
+    channelId: channel.id,
+    forcedChapter: forcedChapter ?? null,
+    forcedCategory: forcedCategory ?? null,
+  };
+  queuesForMode.push(newQueue);
 
-  // Always lock in the forced values from the queue creator
-  // so latecomers can't overwrite them
-  const effectiveChapter = data.forcedChapter;
-  const effectiveCategory = data.forcedCategory;
-
-  data.players.push(user.id);
   const slots = MODES[mode].slots;
-
-  const embed = buildQueueEmbed(mode, data.players, effectiveChapter, effectiveCategory);
-  const row = buildQueueButtons(mode);
+  const embed = buildQueueEmbed(mode, newQueue.players, newQueue.forcedChapter, newQueue.forcedCategory);
+  const row = buildQueueButtons(mode, queueId);
 
   let msg;
   if (interaction) {
@@ -743,12 +774,38 @@ async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, 
   } else {
     msg = await channel.send({ embeds: [embed], components: [row] });
   }
-  data.messageId = msg ? msg.id : null;
+  newQueue.messageId = msg ? msg.id : null;
 
-  if (data.players.length >= slots) {
-    await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter, data.forcedCategory);
-    delete guildQueues[mode];
+  if (newQueue.players.length >= slots) {
+    await startMatch(mode, guildId, channel, newQueue.players.slice(), newQueue.forcedChapter, newQueue.forcedCategory);
+    guildQueues[mode] = queuesForMode.filter(q => q.queueId !== queueId);
+    if (guildQueues[mode].length === 0) delete guildQueues[mode];
+    return;
   }
+
+  // Auto-expire the queue after 5 minutes if it never filled up
+  setTimeout(async () => {
+    const currentQueues = matchmaking[guildId]?.[mode];
+    if (!Array.isArray(currentQueues)) return;
+    const stillExists = currentQueues.find(q => q.queueId === queueId);
+    if (!stillExists) return; // already started or cancelled
+
+    // Remove from array
+    matchmaking[guildId][mode] = currentQueues.filter(q => q.queueId !== queueId);
+    if (matchmaking[guildId][mode].length === 0) delete matchmaking[guildId][mode];
+
+    // Edit the Discord message to show it expired
+    try {
+      const ch = await client.channels.fetch(stillExists.channelId);
+      const oldMsg = await ch.messages.fetch(stillExists.messageId);
+      const expiredEmbed = new EmbedBuilder()
+        .setTitle(`${MODES[mode].emoji} Queue Expired — ${MODES[mode].label}`)
+        .setDescription('⏰ **This queue expired** after 5 minutes without filling up.')
+        .setColor(0x95a5a6)
+        .setTimestamp();
+      await oldMsg.edit({ embeds: [expiredEmbed], components: [] });
+    } catch (_) {}
+  }, 5 * 60 * 1000);
 }
 
 async function startMatch(mode, guildId, channel, players, forcedChapter = null, forcedCategory = null) {
