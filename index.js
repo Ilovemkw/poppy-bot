@@ -19,7 +19,11 @@ const client = new Client({
 // ─────────────────────────────────────────
 //  PERSISTENCIA EN MONGODB
 // ─────────────────────────────────────────
-const mongoClient = new MongoClient(process.env.MONGODB_URI);
+const mongoClient = new MongoClient(process.env.MONGODB_URI, {
+  tls: true,
+  tlsAllowInvalidCertificates: true,
+  serverSelectionTimeoutMS: 5000,
+});
 let db;
 
 async function connectDB() {
