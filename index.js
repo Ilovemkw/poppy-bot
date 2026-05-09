@@ -785,6 +785,12 @@ async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, 
   }
   newQueue.messageId = msg ? msg.id : null;
 
+  // Ping the 1v1 role when a queue opens
+  try {
+    const role = channel.guild.roles.cache.find(r => r.name === '1v1');
+    if (role) await channel.send({ content: `${role} — a new **${mode}** queue has opened!` });
+  } catch (_) {}
+
   if (newQueue.players.length >= slots) {
     await startMatch(mode, guildId, channel, newQueue.players.slice(), newQueue.forcedChapter, newQueue.forcedCategory);
     guildQueues[mode] = queuesForMode.filter(q => q.queueId !== queueId);
