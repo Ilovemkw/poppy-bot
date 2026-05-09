@@ -1,6 +1,5 @@
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits,
@@ -18,27 +17,33 @@ const client = new Client({
 });
 
 // ─────────────────────────────────────────
-//  PERSISTENCIA EN DISCO
+//  PERSISTENCIA EN MONGODB
 // ─────────────────────────────────────────
-const DATA_FILE = path.join(__dirname, 'data.json');
+const mongoClient = new MongoClient(process.env.MONGODB_URI);
+let db;
 
-function loadData() {
+async function connectDB() {
+  await mongoClient.connect();
+  db = mongoClient.db('poppybot');
+  console.log('✅ Connected to MongoDB');
+}
+
+async function loadData() {
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    }
-  } catch (e) {
-    console.error('Failed to load data.json:', e);
-  }
+    const doc = await db.collection('data').findOne({ _id: 'gamedata' });
+    if (doc) return { leaderboard: doc.leaderboard || {}, bestTimes: doc.bestTimes || {} };
+  } catch (e) { console.error('Failed to load from MongoDB:', e); }
   return { leaderboard: {}, bestTimes: {} };
 }
 
-function saveData() {
+async function saveData() {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ leaderboard, bestTimes }, null, 2));
-  } catch (e) {
-    console.error('Failed to save data.json:', e);
-  }
+    await db.collection('data').updateOne(
+      { _id: 'gamedata' },
+      { $set: { leaderboard, bestTimes } },
+      { upsert: true }
+    );
+  } catch (e) { console.error('Failed to save to MongoDB:', e); }
 }
 
 // ─────────────────────────────────────────
@@ -97,11 +102,9 @@ const CHAPTERS = {
 // ─────────────────────────────────────────
 //  ESTADO (persistente)
 // ─────────────────────────────────────────
-const saved = loadData();
-// leaderboard[guildId][userId] = { wins, byChapter: { "1:Any% - OOB": N } }
-const leaderboard = saved.leaderboard || {};
-// bestTimes[guildId][userId]["1:Any% - OOB"] = bestTimeInSeconds
-const bestTimes = saved.bestTimes || {};
+// Se carga desde MongoDB al arrancar — ver bloque de inicio abajo
+let leaderboard = {};
+let bestTimes = {};
 
 // Estado en memoria (no necesita persistencia)
 const matchmaking = {};
@@ -946,6 +949,12 @@ async function resolveMatch(matchId) {
 }
 
 // ─────────────────────────────────────────
-//  LOGIN
+//  INICIO
 // ─────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN);
+(async () => {
+  await connectDB();
+  const saved = await loadData();
+  leaderboard = saved.leaderboard;
+  bestTimes = saved.bestTimes;
+  client.login(process.env.DISCORD_TOKEN);
+})();
