@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { MongoClient } = require('mongodb');
+const mongoose = require('mongoose');
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits,
@@ -17,18 +17,17 @@ const client = new Client({
 });
 
 // ─────────────────────────────────────────
-//  PERSISTENCIA EN MONGODB
+//  PERSISTENCIA EN MONGODB (mongoose)
 // ─────────────────────────────────────────
-const mongoClient = new MongoClient(process.env.MONGODB_URI, {
-  tls: true,
-  tlsAllowInvalidCertificates: true,
-  serverSelectionTimeoutMS: 5000,
-});
 let db;
 
 async function connectDB() {
-  await mongoClient.connect();
-  db = mongoClient.db('poppybot');
+  await mongoose.connect(process.env.MONGODB_URI, {
+    ssl: true,
+    tlsAllowInvalidCertificates: true,
+    serverSelectionTimeoutMS: 10000,
+  });
+  db = mongoose.connection.db;
   console.log('✅ Connected to MongoDB');
 }
 
