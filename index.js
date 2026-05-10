@@ -114,10 +114,11 @@ const matchmaking = {};
 const activeMatches = {};
 
 const MODES = {
-  "1v1":         { slots: 2, label: "1v1",         emoji: "⚔️" },
-  "1v1v1":       { slots: 3, label: "1v1v1",       emoji: "🔺" },
-  "1v1v1v1":     { slots: 4, label: "1v1v1v1",     emoji: "🟥" },
-  "1v1v1v1v1":   { slots: 5, label: "1v1v1v1v1",   emoji: "⭐" },
+  "1v1":           { slots: 2, label: "1v1",           emoji: "⚔️" },
+  "1v1v1":         { slots: 3, label: "1v1v1",         emoji: "🔺" },
+  "1v1v1v1":       { slots: 4, label: "1v1v1v1",       emoji: "🟥" },
+  "1v1v1v1v1":     { slots: 5, label: "1v1v1v1v1",     emoji: "⭐" },
+  "1v1v1v1v1v1":   { slots: 6, label: "1v1v1v1v1v1",   emoji: "🔥" },
 };
 
 // ─────────────────────────────────────────
@@ -291,6 +292,7 @@ const commands = [
           { name: '🔺 1v1v1', value: '1v1v1' },
           { name: '🟥 1v1v1v1', value: '1v1v1v1' },
           { name: '⭐ 1v1v1v1v1', value: '1v1v1v1v1' },
+          { name: '🔥 1v1v1v1v1v1', value: '1v1v1v1v1v1' },
         )
     )
     .addStringOption(opt =>
@@ -340,6 +342,7 @@ const commands = [
           { name: '🔺 1v1v1', value: '1v1v1' },
           { name: '🟥 1v1v1v1', value: '1v1v1v1' },
           { name: '⭐ 1v1v1v1v1', value: '1v1v1v1v1' },
+          { name: '🔥 1v1v1v1v1v1', value: '1v1v1v1v1v1' },
         )
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
