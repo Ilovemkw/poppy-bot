@@ -1017,7 +1017,6 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
   const mentions = players.map(p => `<@${p}>`).join(' ');
 
   if (matchType === 'bans') {
-    // Ban phase — chapter/category decided after bans
     activeMatches[matchId] = {
       matchId, mode, players, matchType,
       chapter: null, category: null,
@@ -1028,6 +1027,9 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
     };
 
     await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
+
+    // Small delay to ensure channel is ready
+    await new Promise(r => setTimeout(r, 1000));
 
     const match = activeMatches[matchId];
     const embed = buildBanPhaseEmbed(match);
@@ -1041,7 +1043,6 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
       components: rows,
     });
   } else {
-    // Random or manual — chapter/category already decided
     const chapter = (forcedChapter !== null && forcedChapter !== undefined) ? forcedChapter : randomChapter();
     const category = (forcedCategory !== null && forcedCategory !== undefined) ? forcedCategory : randomCategory(chapter);
 
@@ -1057,6 +1058,10 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
     const buttons = buildMatchButtons(matchId);
 
     await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
+
+    // Small delay to ensure channel is ready
+    await new Promise(r => setTimeout(r, 1000));
+
     await matchChannel.send({
       content: `${mentions}\n\n🏁 **Your match has started!** Submit your time once you finish.`,
       embeds: [embed],
