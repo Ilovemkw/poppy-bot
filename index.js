@@ -122,6 +122,84 @@ const MODES = {
 };
 
 // ─────────────────────────────────────────
+//  SISTEMA DE BANS
+// ─────────────────────────────────────────
+const CATEGORY_POOL = [
+  { id: "c1_1", label: "Ch1 — Any% Any Tapes",         chapter: 1 },
+  { id: "c1_2", label: "Ch1 — Any% All Tapes",         chapter: 1 },
+  { id: "c1_3", label: "Ch1 — NMG Any Tapes",          chapter: 1 },
+  { id: "c1_4", label: "Ch1 — NMG All Tapes",          chapter: 1 },
+  { id: "c2_1", label: "Ch2 — Any% OOB",               chapter: 2 },
+  { id: "c2_2", label: "Ch2 — Any% Inbounds",          chapter: 2 },
+  { id: "c2_3", label: "Ch2 — Any% NMS",               chapter: 2 },
+  { id: "c2_4", label: "Ch2 — All Minigames OOB",      chapter: 2 },
+  { id: "c2_5", label: "Ch2 — All Minigames Inbounds", chapter: 2 },
+  { id: "c2_6", label: "Ch2 — All Minigames NMS",      chapter: 2 },
+  { id: "c3_1", label: "Ch3 — Any% OOB",               chapter: 3 },
+  { id: "c3_2", label: "Ch3 — Any% Inbounds",          chapter: 3 },
+  { id: "c3_3", label: "Ch3 — Any% NMS",               chapter: 3 },
+  { id: "c4_1", label: "Ch4 — Any% OOB",               chapter: 4 },
+  { id: "c4_2", label: "Ch4 — Any% Inbounds",          chapter: 4 },
+  { id: "c4_3", label: "Ch4 — Any% NMS",               chapter: 4 },
+  { id: "c5_1", label: "Ch5 — Any% OOB",               chapter: 5 },
+  { id: "c5_2", label: "Ch5 — Any% Inbounds",          chapter: 5 },
+  { id: "c5_3", label: "Ch5 — Any% NMS",               chapter: 5 },
+];
+
+// Ban orders per mode — always 6 bans (player index: 0-based)
+const BAN_ORDERS = {
+  "1v1":           [0, 1, 1, 0, 0, 1],      // A B B A A B
+  "1v1v1":         [0, 1, 2, 0, 1, 2],      // A B C A B C
+  "1v1v1v1":       [0, 1, 2, 3, 0, 1],      // A B C D A B
+  "1v1v1v1v1":     [0, 1, 2, 3, 4, 0],      // A B C D E A
+  "1v1v1v1v1v1":   [0, 1, 2, 3, 4, 5],      // A B C D E F
+};
+
+function getRemainingCategories(bannedIds) {
+  return CATEGORY_POOL.filter(c => !bannedIds.includes(c.id));
+}
+
+function buildBanPhaseEmbed(match) {
+  const remaining = getRemainingCategories(match.banPhase.bannedIds);
+  const banned = CATEGORY_POOL.filter(c => match.banPhase.bannedIds.includes(c.id));
+  const banOrder = BAN_ORDERS[match.banMode];
+  const step = match.banPhase.step;
+  const bannerIndex = banOrder[step];
+  const bannerId = match.players[bannerIndex];
+
+  const bannedList = banned.length > 0 ? banned.map(c => `~~${c.label}~~`).join('\n') : '*None yet*';
+  const remainingList = remaining.map(c => `• ${c.label}`).join('\n');
+
+  return new EmbedBuilder()
+    .setTitle(`🚫 Ban Phase — Step ${step + 1}/${banOrder.length}`)
+    .setDescription(`It's <@${bannerId}>'s turn to ban a category.`)
+    .addFields(
+      { name: `❌ Banned (${banned.length}/${banOrder.length})`, value: bannedList, inline: false },
+      { name: `✅ Remaining (${remaining.length})`, value: remainingList, inline: false },
+    )
+    .setColor(0xe74c3c)
+    .setFooter({ text: `Match ID: ${match.matchId}` })
+    .setTimestamp();
+}
+
+function buildBanButtons(match) {
+  const remaining = getRemainingCategories(match.banPhase.bannedIds);
+  const rows = [];
+  for (let i = 0; i < remaining.length; i += 5) {
+    const chunk = remaining.slice(i, i + 5);
+    rows.push(new ActionRowBuilder().addComponents(
+      chunk.map(c =>
+        new ButtonBuilder()
+          .setCustomId(`ban:${match.matchId}:${c.id}`)
+          .setLabel(c.label)
+          .setStyle(ButtonStyle.Danger)
+      )
+    ));
+  }
+  return rows.slice(0, 5);
+}
+
+// ─────────────────────────────────────────
 //  HELPERS
 // ─────────────────────────────────────────
 function randomChapter() {
@@ -178,16 +256,23 @@ function formatTime(secs) {
 // ─────────────────────────────────────────
 //  EMBEDS
 // ─────────────────────────────────────────
-function buildQueueEmbed(mode, players, forcedChapter = null, forcedCategory = null) {
+function buildQueueEmbed(mode, players, forcedChapter = null, forcedCategory = null, matchType = 'random') {
   const modeInfo = MODES[mode];
   const slots = modeInfo.slots;
   const filled = players.length;
   const playerList = players.map((p, i) => `${i + 1}. <@${p}>`).join('\n') || '*Nobody in queue...*';
   const bar = '🟢'.repeat(filled) + '⬛'.repeat(slots - filled);
 
+  const typeLabels = {
+    random: '🎲 Random chapter & category',
+    bans:   '🚫 Ban phase (6 bans)',
+    manual: '🎯 Manual chapter/category',
+  };
+
   const fields = [
     { name: 'Progress', value: `${bar} (${filled}/${slots})`, inline: false },
     { name: 'Mode', value: modeInfo.label, inline: true },
+    { name: 'Match Type', value: typeLabels[matchType] || matchType, inline: true },
     { name: 'Status', value: filled < slots ? '⏳ Waiting for players...' : '✅ Ready to start!', inline: true },
   ];
 
@@ -296,7 +381,15 @@ const commands = [
         )
     )
     .addStringOption(opt =>
-      opt.setName('chapter').setDescription('Force a specific chapter (optional)').setRequired(false)
+      opt.setName('matchtype').setDescription('How the category is decided').setRequired(true)
+        .addChoices(
+          { name: '🎲 Random — bot picks chapter & category', value: 'random' },
+          { name: '🚫 Bans — players ban categories (6 bans)', value: 'bans' },
+          { name: '🎯 Manual — choose chapter & category yourself', value: 'manual' },
+        )
+    )
+    .addStringOption(opt =>
+      opt.setName('chapter').setDescription('Force a specific chapter (only for Manual mode)').setRequired(false)
         .addChoices(...chapterChoices)
     ),
 
@@ -457,7 +550,7 @@ client.on('interactionCreate', async (interaction) => {
             try {
               const ch = await client.channels.fetch(data.channelId);
               const msg = await ch.messages.fetch(data.messageId);
-              await msg.edit({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode, data.queueId)] });
+              await msg.edit({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory, data.matchType)], components: [buildQueueButtons(mode, data.queueId)] });
             } catch (_) {}
             break;
           }
@@ -488,6 +581,7 @@ client.on('interactionCreate', async (interaction) => {
     // /queue
     if (commandName === 'queue') {
       const mode = interaction.options.getString('mode');
+      const matchType = interaction.options.getString('matchtype') || 'random';
       const forcedChapter = interaction.options.getString('chapter');
       const guildQueues = getOrInitGuild(guildId);
 
@@ -500,10 +594,11 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      if (forcedChapter) {
+      // Manual mode: ask for chapter first
+      if (matchType === 'manual' && forcedChapter) {
         const chapterNum = parseInt(forcedChapter);
         const categoryMenu = new StringSelectMenuBuilder()
-          .setCustomId(`queuecat:${mode}:${chapterNum}`)
+          .setCustomId(`queuecat:${mode}:${chapterNum}:manual`)
           .setPlaceholder('Select a category or pick random')
           .addOptions([
             { label: '🎲 Random', value: 'random' },
@@ -517,8 +612,12 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       }
 
+      if (matchType === 'manual' && !forcedChapter) {
+        return interaction.reply({ content: '❌ Please select a **chapter** when using Manual mode.', ephemeral: true });
+      }
+
       await interaction.deferReply();
-      await openQueue(mode, null, null, guildId, channel, user, interaction);
+      await openQueue(mode, null, null, guildId, channel, user, interaction, matchType);
     }
   }
 
@@ -554,17 +653,20 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (customId.startsWith('queuecat:')) {
-      const [, mode, chapterStr] = customId.split(':');
-      const chapterNum = parseInt(chapterStr);
+      const parts = customId.split(':');
+      const mode = parts[1];
+      const chapterNum = parseInt(parts[2]);
+      const matchType = parts[3] || 'manual';
       const selected = interaction.values[0];
       const forcedCategory = selected === 'random' ? null : selected;
 
       await interaction.update({
-        content: `✅ Opening **${mode}** queue for **${CHAPTERS[chapterNum].name}** — ${forcedCategory || 'Random category'}...`,
+        content: `✅ Opening **${mode}** queue — 🎯 **Manual** | **${CHAPTERS[chapterNum].name}** — ${forcedCategory || 'Random category'}...`,
         embeds: [], components: []
       });
 
-      await openQueue(mode, chapterNum, forcedCategory, guildId, channel, user, null);
+      await openQueue(mode, chapterNum, forcedCategory, guildId, channel, user, null, matchType);
+    }
     }
   }
 
@@ -585,7 +687,6 @@ client.on('interactionCreate', async (interaction) => {
 
       if (action === 'join') {
         if (!data) return interaction.reply({ content: '❌ This queue no longer exists.', ephemeral: true });
-        // Check if user is already in any queue of any mode
         for (const [m, queues] of Object.entries(guildQueues)) {
           if (!Array.isArray(queues)) continue;
           for (const q of queues) {
@@ -596,11 +697,11 @@ client.on('interactionCreate', async (interaction) => {
         }
         data.players.push(user.id);
         const slots = MODES[mode].slots;
-        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode, queueId)] });
+        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory, data.matchType)], components: [buildQueueButtons(mode, queueId)] });
         if (data.players.length >= slots) {
-          await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter || null, data.forcedCategory || null);
           guildQueues[mode] = queuesForMode.filter(q => q.queueId !== queueId);
           if (guildQueues[mode].length === 0) delete guildQueues[mode];
+          await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter || null, data.forcedCategory || null, data.matchType || 'random');
         }
       }
 
@@ -609,7 +710,82 @@ client.on('interactionCreate', async (interaction) => {
         const idx = data.players.indexOf(user.id);
         if (idx === -1) return interaction.reply({ content: '❌ You are not in this queue.', ephemeral: true });
         data.players.splice(idx, 1);
-        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory)], components: [buildQueueButtons(mode, queueId)] });
+        await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory, data.matchType)], components: [buildQueueButtons(mode, queueId)] });
+      }
+    }
+
+    // Ban button
+    if (action === 'ban') {
+      const matchId = parts[1];
+      const categoryId = parts[2];
+      const match = activeMatches[matchId];
+
+      if (!match) return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+      if (!match.banPhase) return interaction.reply({ content: '❌ This match has no ban phase.', ephemeral: true });
+      if (match.banPhase.done) return interaction.reply({ content: '❌ Ban phase is already over.', ephemeral: true });
+
+      const banOrder = BAN_ORDERS[match.mode];
+      const step = match.banPhase.step;
+      const expectedPlayerIndex = banOrder[step];
+      const expectedId = match.players[expectedPlayerIndex];
+
+      if (user.id !== expectedId) {
+        return interaction.reply({ content: `❌ It's not your turn to ban!`, ephemeral: true });
+      }
+      if (match.banPhase.bannedIds.includes(categoryId)) {
+        return interaction.reply({ content: '❌ That category is already banned.', ephemeral: true });
+      }
+
+      const cat = CATEGORY_POOL.find(c => c.id === categoryId);
+      if (!cat) return interaction.reply({ content: '❌ Category not found.', ephemeral: true });
+
+      match.banPhase.bannedIds.push(categoryId);
+      match.banPhase.step++;
+
+      if (match.banPhase.step >= banOrder.length) {
+        // All bans done
+        match.banPhase.done = true;
+        const remaining = getRemainingCategories(match.banPhase.bannedIds);
+        const picked = remaining[Math.floor(Math.random() * remaining.length)];
+        match.chapter = picked.chapter;
+        match.category = CHAPTERS[picked.chapter].categories.find(c =>
+          c.toLowerCase().replace(/[^a-z0-9]/g, '') === picked.label.split('— ')[1]?.toLowerCase().replace(/[^a-z0-9]/g, '')
+        ) || picked.label.split('— ')[1];
+
+        const bannedSummary = CATEGORY_POOL
+          .filter(c => match.banPhase.bannedIds.includes(c.id))
+          .map(c => `~~${c.label}~~`).join('\n');
+
+        await interaction.update({
+          content: `✅ **${cat.label}** banned by <@${user.id}>.\n\n**Bans summary:**\n${bannedSummary}\n\n🎲 **Rolling...**`,
+          embeds: [], components: [],
+        });
+
+        const replyMsg = await interaction.fetchReply();
+        const delays = [400, 400, 500, 500, 600, 600, 700, 800, 900, 1000];
+        for (let i = 0; i < delays.length; i++) {
+          await new Promise(r => setTimeout(r, delays[i]));
+          const shown = remaining[Math.floor(Math.random() * remaining.length)];
+          await replyMsg.edit({ content: `✅ **${cat.label}** banned by <@${user.id}>.\n\n**Bans summary:**\n${bannedSummary}\n\n🎲 **Rolling...**\n➡️ ${shown.label}` });
+        }
+
+        const matchEmbed = buildMatchEmbed(match.players, match.chapter, match.category, matchId);
+        const matchButtons = buildMatchButtons(matchId);
+        await replyMsg.edit({
+          content: `✅ **${cat.label}** banned by <@${user.id}>.\n\n**Bans summary:**\n${bannedSummary}\n\n✅ **Selected: ${picked.label}**`,
+          embeds: [matchEmbed],
+          components: [matchButtons],
+        });
+      } else {
+        const nextPlayerIndex = banOrder[match.banPhase.step];
+        const nextId = match.players[nextPlayerIndex];
+        const embed = buildBanPhaseEmbed(match);
+        const rows = buildBanButtons(match);
+        await interaction.update({
+          content: `✅ **${cat.label}** banned by <@${user.id}>. Now it's <@${nextId}>'s turn.`,
+          embeds: [embed],
+          components: rows,
+        });
       }
     }
 
@@ -747,15 +923,13 @@ async function updateStatusEmbed(match, matchChannel) {
   match.statusMessageId = newMsg.id;
 }
 
-async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, user, interaction) {
+async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, user, interaction, matchType = 'random') {
   const guildQueues = getOrInitGuild(guildId);
 
-  // Initialize array for this mode if needed
   if (!guildQueues[mode]) guildQueues[mode] = [];
 
   const queuesForMode = guildQueues[mode];
 
-  // Enforce limit of 99 queues per mode
   if (queuesForMode.length >= 99) {
     const errMsg = `❌ There are already **99** open **${mode}** queues. Please wait for one to finish.`;
     if (interaction) await interaction.editReply({ content: errMsg });
@@ -763,7 +937,6 @@ async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, 
     return;
   }
 
-  // Create a new independent queue
   const queueId = generateQueueId();
   const newQueue = {
     queueId,
@@ -772,11 +945,12 @@ async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, 
     channelId: channel.id,
     forcedChapter: forcedChapter ?? null,
     forcedCategory: forcedCategory ?? null,
+    matchType,
   };
   queuesForMode.push(newQueue);
 
   const slots = MODES[mode].slots;
-  const embed = buildQueueEmbed(mode, newQueue.players, newQueue.forcedChapter, newQueue.forcedCategory);
+  const embed = buildQueueEmbed(mode, newQueue.players, newQueue.forcedChapter, newQueue.forcedCategory, matchType);
   const row = buildQueueButtons(mode, queueId);
 
   let msg;
@@ -788,48 +962,41 @@ async function openQueue(mode, forcedChapter, forcedCategory, guildId, channel, 
   }
   newQueue.messageId = msg ? msg.id : null;
 
-  // Ping the 1v1 role when a queue opens
+  // Ping the 1v1 role
   try {
+    const typeLabels = { random: '🎲 Random', bans: '🚫 Bans', manual: '🎯 Manual' };
     const role = channel.guild.roles.cache.find(r => r.name === '1v1');
-    if (role) await channel.send({ content: `${role} — a new **${mode}** queue has opened!` });
+    if (role) await channel.send({ content: `${role} — a new **${mode}** queue has opened! [${typeLabels[matchType] || matchType}]` });
   } catch (_) {}
 
   if (newQueue.players.length >= slots) {
-    await startMatch(mode, guildId, channel, newQueue.players.slice(), newQueue.forcedChapter, newQueue.forcedCategory);
     guildQueues[mode] = queuesForMode.filter(q => q.queueId !== queueId);
     if (guildQueues[mode].length === 0) delete guildQueues[mode];
+    await startMatch(mode, guildId, channel, newQueue.players.slice(), newQueue.forcedChapter, newQueue.forcedCategory, matchType);
     return;
   }
 
-  // Auto-expire the queue after 5 minutes if it never filled up
+  // Auto-expire after 5 minutes
   setTimeout(async () => {
     const currentQueues = matchmaking[guildId]?.[mode];
     if (!Array.isArray(currentQueues)) return;
     const stillExists = currentQueues.find(q => q.queueId === queueId);
-    if (!stillExists) return; // already started or cancelled
-
-    // Remove from array
+    if (!stillExists) return;
     matchmaking[guildId][mode] = currentQueues.filter(q => q.queueId !== queueId);
     if (matchmaking[guildId][mode].length === 0) delete matchmaking[guildId][mode];
-
-    // Edit the Discord message to show it expired
     try {
       const ch = await client.channels.fetch(stillExists.channelId);
       const oldMsg = await ch.messages.fetch(stillExists.messageId);
       const expiredEmbed = new EmbedBuilder()
         .setTitle(`${MODES[mode].emoji} Queue Expired — ${MODES[mode].label}`)
         .setDescription('⏰ **This queue expired** after 5 minutes without filling up.')
-        .setColor(0x95a5a6)
-        .setTimestamp();
+        .setColor(0x95a5a6).setTimestamp();
       await oldMsg.edit({ embeds: [expiredEmbed], components: [] });
     } catch (_) {}
   }, 5 * 60 * 1000);
 }
 
-async function startMatch(mode, guildId, channel, players, forcedChapter = null, forcedCategory = null) {
-  // Always respect forced values — never fall back to random if they were set
-  const chapter = (forcedChapter !== null && forcedChapter !== undefined) ? forcedChapter : randomChapter();
-  const category = (forcedCategory !== null && forcedCategory !== undefined) ? forcedCategory : randomCategory(chapter);
+async function startMatch(mode, guildId, channel, players, forcedChapter = null, forcedCategory = null, matchType = 'random') {
   const matchId = generateMatchId();
 
   let matchChannel;
@@ -839,14 +1006,8 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
       type: ChannelType.GuildText,
       permissionOverwrites: [
         { id: channel.guild.roles.everyone, deny: ['ViewChannel'] },
-        ...players.map(playerId => ({
-          id: playerId,
-          allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
-        })),
-        {
-          id: client.user.id,
-          allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'ManageChannels'],
-        },
+        ...players.map(playerId => ({ id: playerId, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'] })),
+        { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'ManageChannels'] },
       ],
     });
   } catch (err) {
@@ -854,29 +1015,55 @@ async function startMatch(mode, guildId, channel, players, forcedChapter = null,
     matchChannel = channel;
   }
 
-  activeMatches[matchId] = {
-    players,
-    chapter,
-    category,
-    times: {},
-    forfeited: [],
-    startedAt: new Date(),
-    guildId,
-    channelId: channel.id,
-    matchChannelId: matchChannel.id,
-    statusMessageId: null,
-  };
-
-  const embed = buildMatchEmbed(players, chapter, category, matchId);
-  const buttons = buildMatchButtons(matchId);
   const mentions = players.map(p => `<@${p}>`).join(' ');
 
-  await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
-  await matchChannel.send({
-    content: `${mentions}\n\n🏁 **Your match has started!** Submit your time once you finish.`,
-    embeds: [embed],
-    components: [buttons],
-  });
+  if (matchType === 'bans') {
+    // Ban phase — chapter/category decided after bans
+    activeMatches[matchId] = {
+      matchId, mode, players, matchType,
+      chapter: null, category: null,
+      times: {}, forfeited: [],
+      guildId, channelId: channel.id, matchChannelId: matchChannel.id,
+      statusMessageId: null,
+      banPhase: { bannedIds: [], step: 0, done: false },
+    };
+
+    await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
+
+    const match = activeMatches[matchId];
+    const embed = buildBanPhaseEmbed(match);
+    const rows = buildBanButtons(match);
+    const banOrder = BAN_ORDERS[mode];
+    const firstBannerId = players[banOrder[0]];
+
+    await matchChannel.send({
+      content: `${mentions}\n\n🚫 **Ban phase has started!** <@${firstBannerId}> goes first. (6 bans total)`,
+      embeds: [embed],
+      components: rows,
+    });
+  } else {
+    // Random or manual — chapter/category already decided
+    const chapter = (forcedChapter !== null && forcedChapter !== undefined) ? forcedChapter : randomChapter();
+    const category = (forcedCategory !== null && forcedCategory !== undefined) ? forcedCategory : randomCategory(chapter);
+
+    activeMatches[matchId] = {
+      matchId, mode, players, matchType,
+      chapter, category,
+      times: {}, forfeited: [],
+      guildId, channelId: channel.id, matchChannelId: matchChannel.id,
+      statusMessageId: null,
+    };
+
+    const embed = buildMatchEmbed(players, chapter, category, matchId);
+    const buttons = buildMatchButtons(matchId);
+
+    await channel.send({ content: `🎮 **Match found!** ${mentions} → ${matchChannel}` });
+    await matchChannel.send({
+      content: `${mentions}\n\n🏁 **Your match has started!** Submit your time once you finish.`,
+      embeds: [embed],
+      components: [buttons],
+    });
+  }
 }
 
 async function resolveMatch(matchId) {
