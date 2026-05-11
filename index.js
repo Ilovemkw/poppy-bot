@@ -667,7 +667,6 @@ client.on('interactionCreate', async (interaction) => {
 
       await openQueue(mode, chapterNum, forcedCategory, guildId, channel, user, null, matchType);
     }
-    }
   }
 
   // ── BUTTONS ──
