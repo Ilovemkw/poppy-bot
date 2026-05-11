@@ -162,9 +162,9 @@ function getRemainingCategories(bannedIds) {
 function buildBanPhaseEmbed(match) {
   const remaining = getRemainingCategories(match.banPhase.bannedIds);
   const banned = CATEGORY_POOL.filter(c => match.banPhase.bannedIds.includes(c.id));
-  const banOrder = BAN_ORDERS[match.banMode];
+  const banOrder = BAN_ORDERS[match.mode] || BAN_ORDERS['1v1'];
   const step = match.banPhase.step;
-  const bannerIndex = banOrder[step];
+  const bannerIndex = banOrder[step] ?? 0;
   const bannerId = match.players[bannerIndex];
 
   const bannedList = banned.length > 0 ? banned.map(c => `~~${c.label}~~`).join('\n') : '*None yet*';
@@ -723,9 +723,9 @@ client.on('interactionCreate', async (interaction) => {
       if (!match.banPhase) return interaction.reply({ content: '❌ This match has no ban phase.', ephemeral: true });
       if (match.banPhase.done) return interaction.reply({ content: '❌ Ban phase is already over.', ephemeral: true });
 
-      const banOrder = BAN_ORDERS[match.mode];
+      const banOrder = BAN_ORDERS[match.mode] || BAN_ORDERS['1v1'];
       const step = match.banPhase.step;
-      const expectedPlayerIndex = banOrder[step];
+      const expectedPlayerIndex = banOrder[step] ?? 0;
       const expectedId = match.players[expectedPlayerIndex];
 
       if (user.id !== expectedId) {
