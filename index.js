@@ -698,9 +698,13 @@ client.on('interactionCreate', async (interaction) => {
         const slots = MODES[mode].slots;
         await interaction.update({ embeds: [buildQueueEmbed(mode, data.players, data.forcedChapter, data.forcedCategory, data.matchType)], components: [buildQueueButtons(mode, queueId)] });
         if (data.players.length >= slots) {
+          // Remove queue BEFORE starting match to prevent double match
           guildQueues[mode] = queuesForMode.filter(q => q.queueId !== queueId);
           if (guildQueues[mode].length === 0) delete guildQueues[mode];
-          await startMatch(mode, guildId, channel, data.players.slice(), data.forcedChapter || null, data.forcedCategory || null, data.matchType || 'random');
+          // Capture players before any async operation
+          const playersCopy = data.players.slice();
+          const { forcedChapter, forcedCategory, matchType } = data;
+          await startMatch(mode, guildId, channel, playersCopy, forcedChapter || null, forcedCategory || null, matchType || 'random');
         }
       }
 
